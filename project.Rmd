@@ -1,0 +1,148 @@
+---
+title: "Predict incorrect exercising "
+author: "Matias Lespiau"
+date: "09/08/2014"
+output: html_document
+---
+
+```{r echo=FALSE, message=FALSE}
+library(caret)
+library(rattle)
+library(randomForest)
+# Set seed for reproducibility
+set.seed(07022013)
+```
+
+Executive summary
+-----------------
+In the following report, the possibility of building a classifier for recognizing the correct execution of a weight lifting exercise based on wearable devices is analyzed. The result is that using random forest, a robust classifier can be built. 
+
+
+The data set
+-----------
+The data set is composed of numerous observations from different people doing weight lifting exercises. Each row represents a single exercise done by a person (username) and the measurements taken from a group of instruments that the person was wearing while doing the exercise. Each exercise is classified ("classe" variable) as a correct execution of the exercise (classe A) or as a common mistakes (classes B to E).
+
+Data set clean up and splitting
+------------------------------
+First of all, the two data sets are loaded: training and testing. The testing data set is loaded as "submission" as it does not provide the exercise class (it is meant to be tested by using Coursera's platform). The training data set is loaded as "data" and then it's going to be split in training, test and validation.  
+The first column (row number) of both files is ignored as it does not have statistical significance for the prediction model.
+
+```{r cache=TRUE}
+data <- read.csv('./pml-training.csv')[,-c(1)]
+submission <- read.csv('./pml-testing.csv')[,-c(1)]
+```
+
+For the purpose of doing cross validation and measure the out of sample error, the training data set is split in three parts: 60% training, 20% test and 20% validation.  
+
+```{r cache=TRUE}
+inTrain <- createDataPartition(y=data$classe, p=0.6, list=FALSE)
+training <- data[inTrain,]
+forTesting <- data[-inTrain,]
+inTest <- createDataPartition(y=forTesting$classe, p=0.5, list=FALSE)
+testing <- forTesting[inTest,]
+validation <- forTesting[-inTest,] 
+```
+
+Feature selection
+-----------------
+A manual inspection of the data set quickly reveals that there are many missing values in some of the variables and that there are some variables that does not have statistical significance.
+
+First, the variables that has near zero variance are removed from the data set as they won't be useful for building our model.
+```{r cache=TRUE}
+nzv <- nearZeroVar(training, saveMetrics = TRUE)
+trainingNzv <- training[,!nzv$nzv]
+# even though the near zero variance is calculated in the training dataset
+# the same features must be used when running the prediction in the test, validation and submission datasets.
+testingNzv <- testing[,!nzv$nzv]
+validationNzv <- validation[,!nzv$nzv]
+submissionNzv <- submission[,!nzv$nzv]
+```
+
+Apart from near zero variance, those variables whose 90% of the observations or more are NA are also removed.
+```{r cache=TRUE}
+columnsToUse <- colSums(is.na(trainingNzv)) < dim(training)[1] * 0.9
+cleanTraining <- trainingNzv[,columnsToUse]
+cleanTesting <- testingNzv[,columnsToUse]
+cleanValidation <- validationNzv[,columnsToUse]
+cleanSubmission <- submissionNzv[,columnsToUse]
+```
+
+Also, in the write up data set, some variables need to be adjusted to match the same type as the training set. It also has another variable that is not a feature that is called problem_id, which is also removed.
+```{r cache=TRUE}
+# remove problem_id
+cleanSubmission <- cleanSubmission[,-c(58)]
+cleanSubmission$magnet_dumbbell_z <- as.numeric(cleanSubmission$magnet_dumbbell_z)
+cleanSubmission$magnet_forearm_y <- as.numeric(cleanSubmission$magnet_forearm_y)
+cleanSubmission$magnet_forearm_z <- as.numeric(cleanSubmission$magnet_forearm_z)
+```
+
+At last, username and dates are also removed as the do not have statistical meaning. 
+```{r cache=TRUE}
+# remove username and datetimes
+cleanTraining <- cleanTraining[,-c(1, 2, 3, 4)]
+cleanTesting <- cleanTesting[,-c(1, 2, 3, 4)]
+cleanValidation <- cleanValidation[,-c(1, 2, 3, 4)]
+cleanSubmission <- cleanSubmission[,-c(1, 2, 3, 4)]
+```
+
+
+Model training
+--------------
+For this task, random forest was chosen as the training algorithm, mainly because of the fact that it can be used to train multi-class models with great accuracy.
+
+
+```{r cache=TRUE}
+modelFit <- randomForest(classe ~ ., data=cleanTraining)
+modelFit
+```
+It can be observed that the model is doing a great job classifying the training set. It has an accuracy of `r ` and as it can be observed in the classification matrix, there is a low rate of miss-classifications for each class. The out of sample error is the same as the out of bag error: 0.34%. 
+
+The data is then evaluated to the testing data set.
+```{r cache=TRUE}
+testpredictions <- predict(modelFit, newdata=cleanTesting)
+testingCM <- confusionMatrix(testpredictions, cleanTesting$classe)
+testingCM$table
+testingCM$overall[1]
+```
+The accuracy is very similar to the training's set accuracy. 
+
+If the procedure is repeated for the validation set similar results can be found.
+
+```{r cache=TRUE}
+validationPredictions <- predict(modelFit, newdata=cleanValidation)
+validationCM <- confusionMatrix(validationPredictions, cleanValidation$classe)
+validationCM$table
+validationCM$overall[1]
+```
+This is in part due to the fact that in random forests there is no need to set up a cross validation or separate test set to calculate unbiased estimate of the error as it is estimated internally in each run by constructing the trees with a different bootstrap sample of the data. This means the out of bag error is pretty accurate to estimate the out of sample error.
+
+Considering this, we can rebuild the model by merging the training and testing set.
+```{r cache=TRUE}
+newTraining <- rbind(cleanTraining, cleanTesting)
+modelFit2 <- randomForest(classe ~ ., data=cleanTraining)
+```
+The model has slightly better out of sample error (OOB).
+
+```{r cache=TRUE}
+newValidationPredictions <- predict(modelFit2, newdata=cleanValidation)
+newValidationCM <- confusionMatrix(newValidationPredictions, cleanValidation$classe)
+newValidationCM$table
+newValidationCM$overall[1]
+```
+The performance in the validation set is the same.
+
+Predictions for the project submission
+--------------------------------------
+At last, the predictions for the submission assignment are calculated and written to single files.
+```{r cache=TRUE}
+cleanSubmissionPredictions <- predict(modelFit2, newdata=cleanSubmission)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(cleanSubmissionPredictions)
+```
+The predicted classes are the correct ones according to the Coursera's evaluation in the project submission assignment page.
